@@ -560,3 +560,88 @@ def test_claude_code_backend_logs_in_with_the_oauth_token_secret_when_set(monkey
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in seen[0]                 # no token: the CLI's own login
     assert "COACH_DB_KEY" not in seen[1]                            # still the minimal environment
     assert seen[1]["CLAUDE_CODE_OAUTH_TOKEN"] == "test-oauth-token"
+
+
+# ---------------------------------------------------------------- antigravity
+
+def test_antigravity_classify_command_isolation(cfg):
+    """Assert exact argv: no --dangerously-skip-permissions, isolated with --sandbox and --disable-slash-commands."""
+    from coach.antigravity_cli import ISOLATION_ARGS
+    from coach.classify.backends import antigravity_classify_command
+
+    cmd, timeout = antigravity_classify_command(cfg, "gemini-3.8-flash", LABEL_SCHEMA)
+    assert "--dangerously-skip-permissions" not in cmd
+    assert "--disable-slash-commands" in cmd
+    assert "--sandbox" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "json"
+    assert cmd[cmd.index("--model") + 1] == "gemini-3.8-flash"
+    assert cmd[cmd.index("--json-schema") + 1] == json.dumps(LABEL_SCHEMA)
+    assert all(arg in cmd for arg in ISOLATION_ARGS)
+    assert timeout == 600
+
+
+def test_antigravity_env_isolation(monkeypatch, cfg):
+    """Assert strict environment filtering: no secrets, only allowlisted vars and allowed AGY keys."""
+    from coach.antigravity_cli import AGY_ALLOWED_VARS, SECRET_ENV, antigravity_env
+
+    for s in SECRET_ENV:
+        monkeypatch.setenv(s, "super-secret-value")
+    monkeypatch.setenv("UNWANTED_CUSTOM_TOKEN", "should-not-pass")
+    monkeypatch.setenv("AGY_RANDOM_UNLISTED_SECRET", "should-not-pass")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-123")
+    monkeypatch.setenv("AGY_ACCOUNT", "work")
+
+    env = antigravity_env(cfg)
+    for s in SECRET_ENV:
+        assert s not in env
+    assert "UNWANTED_CUSTOM_TOKEN" not in env
+    assert "AGY_RANDOM_UNLISTED_SECRET" not in env
+    assert env.get("GEMINI_API_KEY") == "gemini-key-123"
+    assert env.get("AGY_ACCOUNT") == "work"
+    assert "PATH" in env
+
+
+def test_antigravity_backend_complete():
+    res_obj = results_json(1)
+
+    def mock_runner(cmd, prompt, env, timeout):
+        assert "--output-format" in cmd and "json" in cmd
+        assert "--json-schema" in cmd
+        assert "--dangerously-skip-permissions" not in cmd
+        assert "--sandbox" in cmd
+        assert "--disable-slash-commands" in cmd
+        return {
+            "status": "SUCCESS",
+            "structured_output": res_obj,
+            "usage": {"input_tokens": 500, "output_tokens": 50, "cache_read_tokens": 200}
+        }, 0, ""
+
+    b = backends.AntiGravityBackend(runner=mock_runner)
+    data, usage = b.complete("Static prompt", "Dynamic prompt", LABEL_SCHEMA, "gemini-model", "label", 1)
+    assert data["results"][0]["id"] == 0
+    assert usage.backend == "antigravity"
+    assert usage.tokens_in == 500
+    assert usage.tokens_out == 50
+    assert usage.cache_read_tokens == 200
+    assert usage.cost_usd is None
+    assert usage.cost_is_estimate is True
+
+
+def test_antigravity_backend_error_handling():
+    def mock_fail(cmd, prompt, env, timeout):
+        return {"status": "ERROR", "error": "model error"}, 1, "Process failed"
+
+    b = backends.AntiGravityBackend(runner=mock_fail)
+    with pytest.raises(RuntimeError, match="agy failed"):
+        b.complete("S", "D", LABEL_SCHEMA, "m", "label", 1)
+
+
+def test_antigravity_config(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[llm]\nbackend = "antigravity"\nantigravity_model = "gemini-pro"\n'
+                 '[coach]\nbackend = "antigravity"\nmodel = "gemini-pro"\n')
+    cfg = load_config(p, env={})
+    b = get_backend(cfg)
+    assert isinstance(b, backends.AntiGravityBackend)
+    assert backends.default_model(cfg, b) == "gemini-pro"
+    assert cfg.coach_model_effective == "gemini-pro"
