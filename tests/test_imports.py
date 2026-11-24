@@ -367,6 +367,102 @@ def test_pdf_generic_skips_balance_lines():
     assert all("balance" not in r.description.lower() for r in parsed.rows)
 
 
+def test_commerzbank_pdf_profile_parsing(tmp_path, con):
+    pdf_bytes = _create_test_pdf([
+        "COMMERZBANK",
+        "Kontoauszug vom 31.05.2026",
+        "IBAN: DE89 3704 0044 0532 0130 00",
+        "BIC : COBADEFFXXX",
+        "Kontowaehrung Euro",
+        "Alter Kontostand vom 30.04.2026 1.000,00+",
+        "Buchungsdatum: 15.05.2026",
+        "Kartenzahlung Supermarkt Nordstern 15.05 45,50-",
+        "End-to-End-Ref.: E2E12345",
+        "Buchungsdatum: 25.05.2026",
+        "Verbindungsnetz GmbH Festnetz 25.05 50,00-",
+        "Buchungsdatum: 28.05.2026",
+        "Arbeitgeber AG Gehalt 28.05 2.500,00+",
+        "Neuer Kontostand vom 31.05.2026 3.404,50+",
+    ])
+    f = tmp_path / "commerzbank_stmt.pdf"
+    f.write_bytes(pdf_bytes)
+
+    parsed = parsers.parse_pdf(pdf_bytes)
+    assert parsed.format == "pdf"
+    assert parsed.iban == "DE89370400440532013000"
+    assert parsed.currency == "EUR"
+    assert len(parsed.rows) == 3
+    assert not parsed.warnings
+
+    # Row 0
+    assert parsed.rows[0].date == "2026-05-15"
+    assert parsed.rows[0].amount == pytest.approx(-45.50)
+    assert parsed.rows[0].counterparty == "Supermarkt Nordstern"
+    assert parsed.rows[0].reference == "E2E12345"
+
+    # Row 1
+    assert parsed.rows[1].date == "2026-05-25"
+    assert parsed.rows[1].amount == pytest.approx(-50.00)
+    assert parsed.rows[1].counterparty == "Verbindungsnetz GmbH"
+
+    # Row 2
+    assert parsed.rows[2].date == "2026-05-28"
+    assert parsed.rows[2].amount == pytest.approx(2500.00)
+    assert parsed.rows[2].counterparty == "Arbeitgeber AG"
+
+    # Test import into database
+    rep = core.import_file(con, f, "new:Commerzbank Test", bank="Commerzbank")
+    assert rep.rows_total == 3
+    assert rep.rows_new == 3
+    assert rep.account_created is True
+
+
+def test_commerzbank_pdf_checksum_mismatch():
+    pdf_bytes = _create_test_pdf([
+        "COMMERZBANK",
+        "Kontoauszug vom 31.05.2026",
+        "IBAN: DE89 3704 0044 0532 0130 00",
+        "Alter Kontostand vom 30.04.2026 1.000,00+",
+        "Buchungsdatum: 15.05.2026",
+        "Kartenzahlung Supermarkt Nordstern 15.05 45,50-",
+        "Neuer Kontostand vom 31.05.2026 2.000,00+",
+    ])
+    # Refuses import on checksum mismatch unless force is passed
+    with pytest.raises(parsers.ParseError, match="checksum mismatch"):
+        parsers.parse_pdf(pdf_bytes)
+
+    parsed = parsers.parse_pdf(pdf_bytes, force=True)
+    assert len(parsed.rows) == 1
+    assert any("checksum mismatch" in w for w in parsed.warnings)
+
+
+def test_commerzbank_pdf_unsigned_amount_skipped_with_warning():
+    pdf_bytes = _create_test_pdf([
+        "COMMERZBANK",
+        "Kontoauszug vom 31.05.2026",
+        "IBAN: DE89 3704 0044 0532 0130 00",
+        "Buchungsdatum: 15.05.2026",
+        "Kartenzahlung Supermarkt Nordstern 15.05 45,50",  # missing explicit sign
+    ])
+    # Missing sign skips row and raises ParseError because no valid rows found
+    with pytest.raises(parsers.ParseError, match="no booked transactions"):
+        parsers.parse_pdf(pdf_bytes)
+
+
+def test_commerzbank_pdf_value_date_december_rollover():
+    pdf_bytes = _create_test_pdf([
+        "COMMERZBANK",
+        "Kontoauszug vom 05.01.2026",
+        "IBAN: DE89 3704 0044 0532 0130 00",
+        "Buchungsdatum: 02.01.2026",
+        "Kartenzahlung Supermarkt Nordstern 30.12 45,50-",
+    ])
+    parsed = parsers.parse_pdf(pdf_bytes)
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].date == "2026-01-02"
+    assert parsed.rows[0].value_date == "2025-12-30"
+
+
 # ---------------------------------------------------------------- dedup guarantees
 
 def write(tmp_path, name, text, enc="utf-8"):
