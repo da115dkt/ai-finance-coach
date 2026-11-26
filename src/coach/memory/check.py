@@ -185,9 +185,12 @@ def run_check(store: MemoryStore, con=None, *, stale_months: int = 6, asset_stal
                     add("warning", "payment_match_nothing", rel, server_msg(
                         "memoryCheck.paymentMatchNothing", f"payment_match /{m.payment_match}/ matches 0 payments", pattern=m.payment_match),
                         "payment_match")
-            elif has_ended and not payments_after_end:
-                pass
-            else:
+            elif not has_ended or payments_after_end:
+                if has_ended and payments_after_end:
+                    add("info", "payments_continue_after_end", rel, server_msg(
+                        "memoryCheck.paymentsContinueAfterEnd",
+                        f"payments continue after the end date ({len(payments_after_end)} observed after {m.end_date})",
+                        count=len(payments_after_end), end_date=m.end_date), "end_date")
                 amts = [abs(t["amount"]) for t in hits]
                 med = statistics.median(amts)
                 if m.monthly_payment and abs(med - m.monthly_payment) / m.monthly_payment > AMOUNT_TOLERANCE:
