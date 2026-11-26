@@ -145,6 +145,17 @@ def test_ended_loan_without_recent_payments_skips_payment_match_nothing_and_stal
     assert by_code(issues, "liability_ended")
 
 
+def test_ended_loan_with_payments_after_end_reports_payments_continue_after_end(world):
+    con, store = world
+    # home-loan has payments up to 2026-09 in world fixture; setting end_date earlier
+    store.set_value("home-loan", "end_date", "2026-05-01")
+    issues = run_check(store, con)
+    info = by_code(issues, "payments_continue_after_end")
+    assert info and "payments continue after the end date" in info[0].message
+    assert by_code(issues, "liability_ended")
+    assert not by_code(issues, "payment_match_nothing")
+
+
 def test_payment_amount_inconsistent_with_monthly_payment(world):
     con, store = world
     store.set_value("home-loan", "monthly_payment", 1200)

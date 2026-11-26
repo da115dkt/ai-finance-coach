@@ -789,6 +789,8 @@
     "paymentMatchNothing": "payment_match /{{pattern}}/ matches 0 payments",
     "paymentMatchOverlap_one": "{{shared}} of its {{count}} matched payment is also matched by {{other}} ({{other_file}}): make one of the two patterns more specific",
     "paymentMatchOverlap_other": "{{shared}} of its {{count}} matched payments are also matched by {{other}} ({{other_file}}): make one of the two patterns more specific",
+    "paymentsContinueAfterEnd_one": "payments continue after the end date ({{count}} observed after {{end_date}})",
+    "paymentsContinueAfterEnd_other": "payments continue after the end date ({{count}} observed after {{end_date}})",
     "paymentsStopped": "last matched payment is {{last_date}}: did the loan end?",
     "placesNotDeclared": "no home / work towns are declared: add `places: [...]` so that they are masked in everything a model sees ([place])",
     "pocketMoneyAdult": "pocket_money is set on '{{member}}', who is not a child",

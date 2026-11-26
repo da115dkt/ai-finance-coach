@@ -159,7 +159,7 @@ export interface Liability {
   payment_match: string | null; early_repayment_penalty: string | number | null; first_payment?: Money | null; residual_value: Money | null; mileage_limit_km: number | null; excess_km_fee?: Money | null; initial_km?: number | null;
   odometer?: { date: string; km: number }[]; notes: string | null; documents?: string[];
   /** English labels of the missing fields; `missing_codes` (same order) are the codes the web translates (labels.loanField). */
-  missing: string[]; missing_codes?: string[]; open_questions: string[]; payments: { series_id: string; last_date: string; next_expected: string | null; amount: Money; status: string } | null;
+  missing: string[]; missing_codes?: string[]; open_questions: string[]; payments: { series_id: string | null; last_date: string; next_expected: string | null; amount: Money; status: string } | null;
   schedule: LoanScheduleSummary; remaining_capital: Money | null; remaining_capital_source: "schedule" | "declared" | null; alerts: LoanAlert[]; payments_seen: number; lease: LeaseStatus | null; inferred: InferredField[];
 }
 export interface LoanDetail {
