@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import re
 
-from coach.ingest.imports.parsers import ParseError, Parsed, Row, parse_amount
+from coach.ingest.imports.base import ParseError, Parsed, Row, parse_amount
 
 
 class GenericPdfProfile:

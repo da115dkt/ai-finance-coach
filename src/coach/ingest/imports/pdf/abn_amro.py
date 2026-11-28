@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 import re
 
-from coach.ingest.imports.parsers import ParseError, Parsed, Row, parse_amount
-from coach.ingest.imports.pdf.common import year_rollover
+from coach.ingest.imports.base import ParseError, Parsed, Row, parse_amount
+from coach.ingest.imports.pdf.common import extract_statement_header, year_rollover
 
 
 class AbnAmroPdfProfile:
@@ -20,24 +20,78 @@ class AbnAmroPdfProfile:
         low_b = (bank_name or "").lower()
         if cls.name in low_p or "abn" in low_p or "abn" in low_b:
             return True
-        low_t = text[:3000].lower()
-        if re.search(r"\bbic\s*:\s*abnanl2a\b", low_t):
-            return True
-        is_abn = "abn amro" in low_t or "abnamro" in low_t
-        if is_abn and any(
-            h in low_t
-            for h in [
-                "afschrift",
+
+        header = extract_statement_header(text)
+        low_h = header.lower()
+
+        # Reject if another bank is identified as the issuing institution in the header
+        if any(
+            k in low_h
+            for k in (
+                "crédit agricole",
+                "credit agricole",
+                "commerzbank",
+                "caisse regionale",
+                "caisse régionale",
+            )
+        ):
+            return False
+
+        # Counterparty pattern to distinguish bank header from transaction lines
+        counterparty_rx = re.compile(
+            r"\b(?:payment\s+to|transfer\s+to|paid\s+to|virement\s+(?:vers|a|pour)|"
+            r"überweisung\s+(?:an|auf)|betaling\s+aan|aan\s*:|to\s*:|vers\s*:)\b",
+            re.I,
+        )
+
+        # Own BIC code in institution header (BIC ABNANL2A, BIC: ABNANL2A, Bank details ABNANL2A, etc.)
+        for line in header.splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            if re.search(r"\babnanl2a(?:[a-z0-9]{3})?\b", line_str.lower()):
+                if not counterparty_rx.search(line_str):
+                    return True
+
+        # Check if ABN AMRO appears as the issuing institution in header (not counterparty)
+        is_abn_issuer = False
+        for line in header.splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            if "abn amro" in line_str.lower() or "abnamro" in line_str.lower():
+                if not counterparty_rx.search(line_str):
+                    is_abn_issuer = True
+                    break
+
+        if is_abn_issuer:
+            # Dutch statement terms
+            dutch_terms = (
                 "rekeningafschrift",
+                "afschrift",
                 "periodiek overzicht",
                 "betalingsverkeer",
                 "volgnummer",
-                "blad",
-            ]
-        ):
-            return True
-        if is_abn and re.search(r"\bNL\d{2}\s*ABNA", text[:2000], re.I):
-            return True
+            )
+            if any(re.search(rf"\b{re.escape(term)}\b", low_h) for term in dutch_terms):
+                return True
+
+            # English statement terms
+            english_terms = (
+                "account statement",
+                "periodical overview",
+                "total amount debit",
+                "total amount credit",
+                "payment services",
+                "statement of account",
+            )
+            if any(term in low_h for term in english_terms):
+                return True
+
+            # Explicit account IBAN in statement header
+            if re.search(r"\b(?:iban|rekening(?:nummer)?|account(?:\s+number)?)\s*[:]?\s*NL\d{2}\s*ABNA", header, re.I):
+                return True
+
         return False
 
     @classmethod
@@ -46,12 +100,22 @@ class AbnAmroPdfProfile:
 
         # Account IBAN detection: Dutch format NLxxABNA..., excluding VAT numbers (NL82...B01)
         iban = None
-        account_ibans = [
-            ib for ib in re.findall(r"\b([A-Z]{2}\d{2}[A-Z0-9]{4,30})\b", p0)
-            if len(ib) >= 15 and not (ib.startswith("NL82") and ib.endswith("B01"))
-        ]
-        if account_ibans:
-            iban = account_ibans[0]
+        m_iban = re.search(
+            r"\b(?:iban|rekening(?:nummer)?|account(?:\s+number)?)\s*[:]?\s*(NL\d{2}(?:\s*[A-Z0-9]){14})\b",
+            p0,
+            re.I,
+        )
+        if m_iban:
+            iban = m_iban.group(1).replace(" ", "").upper()
+        else:
+            account_ibans = [
+                ib.replace(" ", "")
+                for ib in re.findall(r"\b([A-Z]{2}\d{2}(?:\s*[A-Z0-9]){11,30})\b", p0)
+                if len(ib.replace(" ", "")) >= 15
+                and not (ib.replace(" ", "").startswith("NL82") and ib.replace(" ", "").endswith("B01"))
+            ]
+            if account_ibans:
+                iban = account_ibans[0]
 
         # Currency
         currency = "EUR"

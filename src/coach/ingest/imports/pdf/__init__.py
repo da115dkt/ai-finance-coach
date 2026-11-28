@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import io
+import re
 from pypdf import PdfReader
 
-from coach.ingest.imports.parsers import ParseError, Parsed, Profile
+from coach.ingest.imports.base import ParseError, Parsed, Profile
 from coach.ingest.imports.pdf.common import (
     MAX_PDF_PAGES,
     MAX_PDF_SIZE_BYTES,
     _reconcile_balances,
+    extract_statement_header,
     parse_signed_amount,
+    reconcile_balances,
     year_rollover,
 )
 from coach.ingest.imports.pdf.abn_amro import AbnAmroPdfProfile
@@ -60,10 +63,41 @@ def parse_pdf(
     bank_name = bank or ""
 
     selected = None
-    for p_cls in PDF_PROFILES:
-        if p_cls.matches(all_text, prof_name, bank_name):
-            selected = p_cls
-            break
+    if prof_name or bank_name:
+        for p_cls in PDF_PROFILES:
+            if p_cls.matches(all_text, prof_name, bank_name):
+                selected = p_cls
+                break
+
+    if not selected:
+        matching = [
+            p_cls for p_cls in PDF_PROFILES
+            if p_cls is not GenericPdfProfile and p_cls.matches(all_text, "", "")
+        ]
+        if len(matching) == 1:
+            selected = matching[0]
+        elif len(matching) > 1:
+            header = extract_statement_header(p0 or all_text)
+            low_h = header.lower()
+            for p_cls in matching:
+                if p_cls is AbnAmroPdfProfile and (
+                    "abnanl2a" in low_h or re.search(r"\bNL\d{2}\s*ABNA", header, re.I)
+                ):
+                    selected = p_cls
+                    break
+                elif p_cls is CommerzbankPdfProfile and (
+                    "cobadeff" in low_h or re.search(r"\bDE\d{2}\s*3704\s*0044", header, re.I)
+                ):
+                    selected = p_cls
+                    break
+                elif p_cls is CreditAgricolePdfProfile and (
+                    "agrifrpp" in low_h or "caisse regionale" in low_h or "caisse régionale" in low_h
+                ):
+                    selected = p_cls
+                    break
+            if not selected:
+                selected = matching[0]
+
     if not selected:
         selected = GenericPdfProfile
 
@@ -79,7 +113,9 @@ __all__ = [
     "CreditAgricolePdfProfile",
     "GenericPdfProfile",
     "_reconcile_balances",
+    "extract_statement_header",
     "parse_pdf",
     "parse_signed_amount",
+    "reconcile_balances",
     "year_rollover",
 ]

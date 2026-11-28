@@ -484,44 +484,155 @@ def test_parse_pdf_profile_selection_by_name():
     assert len(parsed_cb.rows) == 1
 
 
+def test_pdf_import_subprocess_fresh_interpreter():
+    import subprocess
+    import sys
+
+    # Importing coach.ingest.imports.pdf directly in a fresh process must not fail with circular import
+    subprocess.run(
+        [sys.executable, "-c", "import coach.ingest.imports.pdf"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-c", "import coach.ingest.imports.pdf.common"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-c", "import coach.ingest.imports.pdf.abn_amro"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-c", "import coach.ingest.imports.base"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_abn_amro_pdf_matches_own_header():
-    # Matches on BIC
+    # Matches on BIC (with colon, without colon, or standalone)
     assert parsers.AbnAmroPdfProfile.matches("BIC: ABNANL2A\nAccount details", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("BIC ABNANL2A\nAccount details", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("Bank details ABNANL2A\nAccount details", "", "") is True
+
     # Matches on ABN AMRO + Dutch statement keywords
-    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank N.V.\nRekeningafschrift 2026-01\nBlad 1", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank N.V.\nRekeningafschrift 2026-01", "", "") is True
     assert parsers.AbnAmroPdfProfile.matches("ABN AMRO\nPeriodiek overzicht betalingsverkeer", "", "") is True
     assert parsers.AbnAmroPdfProfile.matches("ABN AMRO\nAfschrift volgnummer 12", "", "") is True
-    # Matches on ABN AMRO + Dutch IBAN
+
+    # Matches on ABN AMRO + English statement keywords
+    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank N.V.\nAccount statement\nPeriod 2026-01", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO\nPeriodical overview\nPayment services", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank\nTotal amount debit: 125,00\nTotal amount credit: 50,00", "", "") is True
+
+    # Matches on ABN AMRO + Dutch account IBAN in header
     assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank\nRekening NL20 ABNA 0123 4567 89", "", "") is True
+    assert parsers.AbnAmroPdfProfile.matches("ABN AMRO Bank\nAccount: NL20ABNA0123456789", "", "") is True
+
     # Matches on explicit profile or bank parameter
     assert parsers.AbnAmroPdfProfile.matches("Generic statement", "abn_amro", "") is True
     assert parsers.AbnAmroPdfProfile.matches("Generic statement", "", "ABN AMRO") is True
 
 
 def test_abn_amro_pdf_does_not_match_other_bank_with_counterparty():
-    # French bank statement with counterparty transfer mentioning ABN AMRO
+    # French bank statement with counterparty transfer mentioning ABN AMRO and an NLxx ABNA IBAN
     fr_stmt = (
         "CREDIT AGRICOLE NORD DE FRANCE\n"
         "RELEVE DE COMPTES EN EUROS\n"
-        "15.04.2026 Virement vers ABN AMRO Bank 12,50-\n"
+        "15.04.2026 Virement vers ABN AMRO Bank NL20 ABNA 0123 4567 89 12,50-\n"
     )
     assert parsers.AbnAmroPdfProfile.matches(fr_stmt, "", "") is False
 
-    # German bank statement with counterparty transfer mentioning ABN AMRO
+    # German bank statement with counterparty transfer mentioning ABN AMRO and an NLxx ABNA IBAN
     de_stmt = (
         "COMMERZBANK AG\n"
         "Kontoauszug vom 31.05.2026\n"
-        "15.05.2026 Überweisung an ABN AMRO 100,00-\n"
+        "15.05.2026 Überweisung an ABN AMRO NL12 ABNA 0123456789 100,00-\n"
     )
     assert parsers.AbnAmroPdfProfile.matches(de_stmt, "", "") is False
 
+    # Generic statement or merchant with "blad" (e.g. Bladmuziek)
+    merchant_stmt = (
+        "COMMERZBANK AG\n"
+        "Kontoauszug vom 31.05.2026\n"
+        "10.05.2026 Kartenzahlung Bladmuziek Amsterdam 25,00-\n"
+    )
+    assert parsers.AbnAmroPdfProfile.matches(merchant_stmt, "", "") is False
+
     # Generic statement with simple mention
-    generic_stmt = "Bank of Example\nStatement of Account\nPayment to ABN AMRO\n"
+    generic_stmt = "Bank of Example\nStatement of Account\nPayment to ABN AMRO NL20 ABNA 0123 4567 89\n"
     assert parsers.AbnAmroPdfProfile.matches(generic_stmt, "", "") is False
 
 
+def test_parse_pdf_dispatches_commerzbank_with_abn_counterparty():
+    # Commerzbank PDF with counterparty line mentioning ABN AMRO + NLxx ABNA IBAN
+    pdf_bytes = _create_test_pdf([
+        "COMMERZBANK AG",
+        "Kontoauszug",
+        "IBAN: DE89 3704 0044 0532 0130 00",
+        "BIC: COBADEFFXXX",
+        "Alter Kontostand: 1.000,00+",
+        "Buchungstag Wert Vorgang",
+        "15.05.2026 15.05.2026 Überweisung an ABN AMRO NL12 ABNA 0123456789 100,00-",
+        "Neuer Kontostand: 900,00+",
+    ])
+    # Must dispatch to Commerzbank, NOT ABN AMRO
+    parsed = parsers.parse_pdf(pdf_bytes)
+    assert parsed.format == "pdf"
+    assert parsed.iban == "DE89370400440532013000"
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].amount == -100.0
+
+
+def test_parse_pdf_dispatches_credit_agricole_with_abn_counterparty():
+    # Crédit Agricole PDF with counterparty line mentioning ABN AMRO + NLxx ABNA IBAN
+    pdf_bytes = _create_test_pdf([
+        "CREDIT AGRICOLE NORD DE FRANCE",
+        "RELEVE DE COMPTES EN EUROS N° 005",
+        "IBAN : FR76 3000 6000 0112 3456 7890 189",
+        "BIC : AGRIFRPP833",
+        "Solde au 01/04/2026 : +500,00",
+        "Date Opération Valeur Débit Crédit",
+        "15.04.2026 Virement vers ABN AMRO NL20 ABNA 0123 4567 89 15.04 12,50-",
+        "Solde au 30/04/2026 : +487,50",
+    ])
+    # Must dispatch to Crédit Agricole, NOT ABN AMRO
+    parsed = parsers.parse_pdf(pdf_bytes)
+    assert parsed.format == "pdf"
+    assert parsed.iban == "FR7630006000011234567890189"
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].amount == -12.5
+
+
+def test_parse_pdf_dispatches_abn_amro_english_statement():
+    # ABN AMRO English statement with English keywords and no Dutch terms
+    pdf_bytes = _create_test_pdf([
+        "ABN AMRO Bank N.V.",
+        "Account statement",
+        "Account: NL20 ABNA 0123 4567 89",
+        "BIC: ABNANL2A",
+        "Date: 31-01-2026",
+        "Total amount debit: 45,50",
+        "Total amount credit: 0,00",
+        "Date Description (Value date) Amount",
+        "15-01-2026 Acme Corp 15-01-2026 45,50-",
+    ])
+    parsed = parsers.parse_pdf(pdf_bytes)
+    assert parsed.format == "pdf"
+    assert parsed.iban == "NL20ABNA0123456789"
+    assert parsed.iban == "NL20ABNA0123456789"
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].amount == -45.5
+
+
 def test_pdf_package_imports_and_backwards_compatibility():
-    from coach.ingest.imports import pdf
+    from coach.ingest.imports import base, pdf
     assert pdf.parse_pdf is parsers.parse_pdf
     assert pdf.AbnAmroPdfProfile is parsers.AbnAmroPdfProfile
     assert pdf.CommerzbankPdfProfile is parsers.CommerzbankPdfProfile
@@ -530,6 +641,15 @@ def test_pdf_package_imports_and_backwards_compatibility():
     assert pdf.PDF_PROFILES == parsers.PDF_PROFILES
     assert pdf.MAX_PDF_SIZE_BYTES == parsers.MAX_PDF_SIZE_BYTES
     assert pdf.MAX_PDF_PAGES == parsers.MAX_PDF_PAGES
+    assert pdf.reconcile_balances is parsers.reconcile_balances
+    assert pdf._reconcile_balances is parsers._reconcile_balances
+    assert base.ParseError is parsers.ParseError
+    assert base.Parsed is parsers.Parsed
+    assert base.Row is parsers.Row
+    assert base.parse_amount is parsers.parse_amount
+    # parse_amount and parse_signed_amount currency consistency
+    assert parsers.parse_amount("100 CHF") == 100.0
+    assert pdf.parse_signed_amount("+100 CHF") == 100.0
 
 
 def test_credit_agricole_pdf_profile_parsing(tmp_path, con):

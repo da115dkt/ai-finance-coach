@@ -86,6 +86,17 @@ A parser turns one bank's free-text descriptions into a type, a merchant and ref
 
 For banks Enable Banking cannot link, add a CSV profile instead (`config/import_profiles/<name>.toml`, see the shipped examples and `coach import --help`).
 
+## How to add a PDF statement profile
+
+A PDF profile parses a bank's statement PDFs into a standard `Parsed` object with booked transactions, balance checks, and extracted IBAN/currency:
+
+1. Write `src/coach/ingest/imports/pdf/<bank>.py` implementing a profile class with:
+   - `name: str = "<bank>"`
+   - `matches(cls, text: str, profile_name: str, bank_name: str) -> bool`: positive identification against the statement header (use `extract_statement_header(text)`). Never match on transaction counterparty text.
+   - `parse(cls, reader: PdfReader, p0: str, all_text: str, force: bool = False) -> Parsed`: extracts metadata and transactions, using shared helpers from `coach.ingest.imports.pdf.common` (`reconcile_balances`, `parse_signed_amount`, `year_rollover`).
+2. Register the profile in `src/coach/ingest/imports/pdf/__init__.py` in `PDF_PROFILES` (before `GenericPdfProfile`).
+3. Add tests in `tests/test_imports.py` verifying header matching, counterparty isolation (ensuring statements from other banks with transfers do not match), end-to-end `parse_pdf` dispatch, and checksum reconciliation.
+
 ## How to add a skill
 
 A skill is a deterministic helper, a read-only finance tool, a prompt, and an interactive Claude Code skill (docs/skills.md lists the rules):

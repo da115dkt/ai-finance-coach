@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from coach.ingest.imports.parsers import ParseError, Parsed, Row
-from coach.ingest.imports.pdf.common import _reconcile_balances, parse_signed_amount, year_rollover
+from coach.ingest.imports.base import ParseError, Parsed, Row
+from coach.ingest.imports.pdf.common import extract_statement_header, parse_signed_amount, reconcile_balances, year_rollover
 
 
 class CommerzbankPdfProfile:
@@ -19,12 +19,13 @@ class CommerzbankPdfProfile:
         low_b = (bank_name or "").lower()
         if cls.name in low_p or "commerz" in low_p or "commerz" in low_b:
             return True
-        low_t = text[:3000].lower()
-        if re.search(r"\bbic\s*:\s*cobadeff", low_t):
+        header = extract_statement_header(text)
+        low_h = header.lower()
+        if re.search(r"\bbic\b[:\s]*cobadeff", low_h):
             return True
-        if re.search(r"commerzbank\s+(?:ag|aktiengesellschaft)", low_t):
+        if re.search(r"commerzbank\s+(?:ag|aktiengesellschaft)", low_h):
             return True
-        if "commerzbank" in low_t and any(h in low_t for h in ["kontoauszug", "umsatzübersicht"]):
+        if "commerzbank" in low_h and any(h in low_h for h in ["kontoauszug", "umsatzübersicht"]):
             return True
         return False
 
@@ -262,7 +263,7 @@ class CommerzbankPdfProfile:
             raise ParseError("no booked transactions found in the Commerzbank PDF statement")
 
         # Checksum reconciliation against statement balances
-        _reconcile_balances(old_bal, new_bal, rows, warnings, force)
+        reconcile_balances(old_bal, new_bal, rows, warnings, force)
 
         # Counterparty and reference extraction
         for r in rows:

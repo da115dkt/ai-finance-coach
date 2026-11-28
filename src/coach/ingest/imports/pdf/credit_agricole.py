@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 import re
 
-from coach.ingest.imports.parsers import ParseError, Parsed, Row, parse_amount
-from coach.ingest.imports.pdf.common import _reconcile_balances, parse_signed_amount
+from coach.ingest.imports.base import ParseError, Parsed, Row, parse_amount
+from coach.ingest.imports.pdf.common import extract_statement_header, parse_signed_amount, reconcile_balances
 
 
 class CreditAgricolePdfProfile:
@@ -36,14 +36,15 @@ class CreditAgricolePdfProfile:
             return True
         if any(k in low_b for k in ("credit agricole", "crédit agricole", "ca nord", "ca pca", "credit_agricole")):
             return True
-        low_t = cls._normalize_ca_text(text[:3000]).lower()
+        header = extract_statement_header(text)
+        low_h = cls._normalize_ca_text(header).lower()
         return (
-            "crédit agricole" in low_t
-            or "credit agricole" in low_t
-            or "crèdit agricole" in low_t
-            or "agrifrpp" in low_t
-            or "caisse regionale de credit agricole" in low_t
-            or "caisse régionale de crédit agricole" in low_t
+            "crédit agricole" in low_h
+            or "credit agricole" in low_h
+            or "crèdit agricole" in low_h
+            or "agrifrpp" in low_h
+            or "caisse regionale de credit agricole" in low_h
+            or "caisse régionale de crédit agricole" in low_h
         )
 
     @classmethod
@@ -112,7 +113,7 @@ class CreditAgricolePdfProfile:
             if dropped_csl > 0:
                 warnings.append(f"skipped {dropped_csl} transaction line(s) in CSL statement due to parsing error")
 
-            _reconcile_balances(old_bal, new_bal, rows, warnings, force)
+            reconcile_balances(old_bal, new_bal, rows, warnings, force)
 
         # Case 2: Standard checking account statement
         if not rows:
@@ -263,7 +264,7 @@ class CreditAgricolePdfProfile:
                         )
                     )
 
-            _reconcile_balances(old_bal, new_bal, rows, warnings, force)
+            reconcile_balances(old_bal, new_bal, rows, warnings, force)
 
         # Fallback for synthetic single-line test statements
         if not rows:
@@ -303,7 +304,7 @@ class CreditAgricolePdfProfile:
                     continue
 
             if rows:
-                _reconcile_balances(old_bal, new_bal, rows, warnings, force)
+                reconcile_balances(old_bal, new_bal, rows, warnings, force)
 
         if not rows:
             raise ParseError("no booked transactions found in the Crédit Agricole PDF statement")
